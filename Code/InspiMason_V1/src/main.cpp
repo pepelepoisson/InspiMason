@@ -58,6 +58,7 @@ const int analogInPin = A0;  // ESP8266 Analog Pin ADC0 = A0
 int sensorValue = 0;  // value read from the ADC0
 float batteryVoltage=0;
 #define batteryVoltageCalibration 165.45
+#define LowBattWarningLevel 3.6
 
 #define ENABLE_GxEPD2_GFX 1
 
@@ -69,8 +70,8 @@ float batteryVoltage=0;
 //#include "Audiowide_Regular9pt7b.h"
 //#include <Fonts/TomThumb.h>
 //#include "bitmaps/Bitmaps200x200.h" // 1.54" b/w
-#include "bitmaps/Bitmaps128x296.h" // 2.9"  b/w
-//#include "project_bitmaps.h"
+//#include "bitmaps/Bitmaps128x296.h" // 2.9"  b/w
+#include "project_bitmaps128x296.h"
 
 #define RST_PIN 0 // D3(0)
 #define CS_1 SS // CS = D8(15)
@@ -98,7 +99,7 @@ char webpage[] PROGMEM = R"=====(
 </head>
 <body>
   <form>
-  <h1 style="font-size:60px;color:blue;" title="InspiMason">InspiMason - Une conserve de bonnes idées</h1>
+  <h1 style="font-size:60px;color:blue;" title="InspiMason">InspiMason - Une conserve d'idées inspirantes</h1>
     <fieldset>
     <legend style="color:blue;">Paramètres pour la connexion à un réseau WiFi existant:</legend>
       <div>
@@ -121,10 +122,19 @@ char webpage[] PROGMEM = R"=====(
       <input type='submit' value='Update'>
     </fieldset>
   </form>
+  <form action="/action_page">
+  <fieldset>
+  <legend style="color:blue;">Message à afficher immédiatement:</legend>
+    Message à envoyer:<br>
+    <input type="text" name="message_web" size="150" >
+    <br><br>
+    <input type="submit" value="Envoyer">
+    </fieldset>
+  </form>
 </body>
 <script>
 function myFunction()
-{
+{Projet SansTitre
   console.log("button was clicked!");
 
   var ssid = document.getElementById("ssid").value;
@@ -252,6 +262,23 @@ String formatMessage(String message)
   int messageLength=message.length();
   Serial.println(message);
   Serial.println(messageLength);
+
+  // Substitute characters no part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
+  message.replace("ô","#");
+  message.replace("É","$");
+  message.replace("û","*");
+  message.replace("ç","+");
+  message.replace("î","<");
+  message.replace("à","{");
+  message.replace("ê","|");
+  message.replace("é","}");
+  message.replace("è","~");
+  message.replace("ë",">");
+  message.replace("ù","^");
+  message.replace("ï","_");
+  message.replace("Ê","=");
+  message.replace("â","\\");
+
   char Buf[messageLength+1]; // Char array used to manipulate string content by position
   message.toCharArray(Buf, messageLength+1);  // Store sting content in a char array.
   citation_fits=true;
@@ -281,6 +308,7 @@ String formatMessage(String message)
 
 void print_string(GxEPD2_GFX& display, String message)
 {
+  display1.init(115200); // enable diagnostic output on Serial
   //display.setRotation(3);
   display.setRotation(1);
   display.setFont(&FreeMonoBold9pt7b);
@@ -302,9 +330,10 @@ void print_string(GxEPD2_GFX& display, String message)
   while (display.nextPage());
 }
 
-void drawBitmaps128x296(GxEPD2_GFX& display){
+void drawBitmaps128x296(GxEPD2_GFX& display){  // Call this subroutine to draw all images in the bitmaps array one after the other.
   //const unsigned char* bitmaps[] = {AventuriersSaintGerard,PapasInventeursEtJeunes_128x296};
-  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296};
+  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296};
+  //const unsigned char* bitmaps[] = {ChargeBattery_128x296};
   bool m = display.mirror(true);
   for (uint16_t i = 0; i < sizeof(bitmaps) / sizeof(char*); i++){
     display.firstPage();
@@ -317,6 +346,26 @@ void drawBitmaps128x296(GxEPD2_GFX& display){
     delay(2000);
   }
   display.mirror(m);
+}
+
+void drawTargetBitmap128x296(GxEPD2_GFX& display,uint16_t target_image){  // Call this subroutine to draw a single image referred by its position in the bitmaps array.
+  display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
+  display.setFullWindow();
+  display.setRotation(2);
+  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296};
+  bool m = display.mirror(true);
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.drawInvertedBitmap(0, 0, bitmaps[target_image], display.epd2.WIDTH, display.epd2.HEIGHT, GxEPD_BLACK);
+  }
+  while (display.nextPage());
+  display.mirror(m);
+
+  // Initialise LEDs again
+  pinMode(MOSFET_GATE, OUTPUT); digitalWrite(MOSFET_GATE, HIGH);
+  strip.begin();
+  strip.setBrightness(LOW_BRIGHTNESS);
 }
 
 
@@ -485,6 +534,25 @@ void handleSettingsUpdate()
   wifiConnect();
 }
 
+void handleForm() {
+ String messageWeb = server.arg("message_web");
+
+ Serial.print("Message venu du web:");
+ Serial.print("Before reformating: ");Serial.println(messageWeb);
+ messageWeb=formatMessage(messageWeb);  // Modify message to replace letters not in default font and avoid breaking words at end of number_of_lines
+Serial.print("After reformating: ");Serial.println(messageWeb);
+ print_string(display1,messageWeb);
+
+ //String s = "<a href='/'> Go Back </a>";
+ //server.send(200, "text/html", s); //Send web page
+ LED("off");
+ delay(500);
+
+ display1.powerOff();
+ Serial.println("Job done! Now starting deep sleep.");
+ ESP.deepSleep(0);
+}
+
 void displayInfo(GxEPD2_GFX& display, String current_ip, String current_ssid, int code_run_counter, int current_citation, int number_of_citations, float batteryVoltage){
   //display.fillScreen(GxEPD_WHITE);
   //display.fillRect(0, 0, 100, 100, GxEPD_BLACK);
@@ -532,21 +600,7 @@ String GetCitation()
   myDataFile.close();    // Close the file
   //citation="un été";
   //citation="Test message: Hâte-toi d'Être";
-  // Substitute characters no part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
-  citation.replace("ô","#");
-  citation.replace("É","$");
-  citation.replace("û","*");
-  citation.replace("ç","+");
-  citation.replace("î","<");
-  citation.replace("à","{");
-  citation.replace("ê","|");
-  citation.replace("é","}");
-  citation.replace("è","~");
-  citation.replace("ë",">");
-  citation.replace("ù","^");
-  citation.replace("ï","_");
-  citation.replace("Ê","=");
-  citation.replace("â","\\");
+
 
   return citation;
 }
@@ -621,6 +675,13 @@ void setup()
   digitalWrite(RST_PIN, HIGH);
   delay(200);
 
+  if ((batteryVoltage<=LowBattWarningLevel)&(batteryVoltage>0.5)){
+    drawTargetBitmap128x296(display1,1);
+    colorTransientWipe(strip.Color(255, 0, 0));
+    delay(5000);
+  }
+
+
   Serial.println("(4) Read and update execution counters from SPIFFS.");
   // Check for log.json file used to store log counters etc.
   const char * _code_run_counter = "", *_current_citation = "", *_number_of_citations = "";
@@ -666,6 +727,7 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
   // Convert counters from char to integer then add one.
   updated_code_run_counter=atoi(_code_run_counter)+1;
   updated_current_citation=atoi(_current_citation)+1;
+  // NEED TO DEBUG BELOW
   if ((atoi(_number_of_citations)==1)&(citations_file_exists)){ // If _number_of_citations is not red fron log file and citations.txt file exists then read it to update number of citations counter
     colorTransientWipe(strip.Color(255, 0, 0));
     filename="citations.txt";
@@ -675,6 +737,7 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
 
 
   String logData = "{code_run_counter:"+String(updated_code_run_counter)+", current_citation:"+String(updated_current_citation)+", number_of_citations:"+String(_number_of_citations)+"}";
+  Serial.println(logData);
   //String logData = "{code_run_counter:10, current_citation:5}";
   Serial.println("Will now update log.json file - don't reboot!.");
   DynamicJsonBuffer logjBuffer;
@@ -718,6 +781,7 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
       server.sendHeader("Access-Control-Allow-Origin", "*");
       server.send(200, "text/html", webpage);
     });
+    server.on("/action_page", handleForm); //form action is handled here
 
     server.onFileUpload([]() {
       if (server.uri() != "/update") return;
@@ -749,16 +813,16 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
     server.begin();
     Serial.println("Webserver running");
 
-    display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
-    drawBitmaps(display1);
+    //display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
+    drawTargetBitmap128x296(display1,0);
     delay(2000);
     displayInfo(display1,current_ip,current_ssid,updated_code_run_counter, updated_current_citation,number_of_citations, batteryVoltage);
     //print_string(display1," SSID: "+current_ssid+" IP Address: "+current_ip);
 
     // Initialise LEDs again
-    pinMode(MOSFET_GATE, OUTPUT); digitalWrite(MOSFET_GATE, HIGH);
-    strip.begin();
-    strip.setBrightness(LOW_BRIGHTNESS);
+    //pinMode(MOSFET_GATE, OUTPUT); digitalWrite(MOSFET_GATE, HIGH);
+    //strip.begin();
+    //strip.setBrightness(LOW_BRIGHTNESS);
     //colorTransientWipe(strip.Color(0, 0, 255));
   }
   //} else {
@@ -783,7 +847,7 @@ void loop()
     LED("off");
     if (SetupMode==true){Serial.print(" battery voltage: "); Serial.print(batteryVoltage);Serial.println("V");}
     delay(50);
-    display1.init(115200); // enable diagnostic output on Serial
+    //display1.init(115200); // enable diagnostic output on Serial
 
 
     //drawBitmaps(display1);
