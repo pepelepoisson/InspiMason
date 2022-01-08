@@ -59,6 +59,7 @@ int sensorValue = 0;  // value read from the ADC0
 float batteryVoltage=0;
 #define batteryVoltageCalibration 165.45
 #define LowBattWarningLevel 3.6
+#define LowBattAlarmLevel 3.4
 
 #define ENABLE_GxEPD2_GFX 1
 
@@ -131,10 +132,18 @@ char webpage[] PROGMEM = R"=====(
     <input type="submit" value="Envoyer">
     </fieldset>
   </form>
+  <form>
+  <fieldset>
+  <legend style="color:blue;">En manque d'inspiration?</legend>
+    <div>
+    Consultez <a href="http://www.chezpapietmamie.com/inspimason/" target="_blank">le site web InspiMason</a> pour télecharger ou partager des fichiers de contenu!<br>
+    </div>
+  </fieldset>
+</form>
 </body>
 <script>
 function myFunction()
-{Projet SansTitre
+{
   console.log("button was clicked!");
 
   var ssid = document.getElementById("ssid").value;
@@ -332,7 +341,7 @@ void print_string(GxEPD2_GFX& display, String message)
 
 void drawBitmaps128x296(GxEPD2_GFX& display){  // Call this subroutine to draw all images in the bitmaps array one after the other.
   //const unsigned char* bitmaps[] = {AventuriersSaintGerard,PapasInventeursEtJeunes_128x296};
-  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296};
+  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296,InspiMasonLogoV1_128x296};
   //const unsigned char* bitmaps[] = {ChargeBattery_128x296};
   bool m = display.mirror(true);
   for (uint16_t i = 0; i < sizeof(bitmaps) / sizeof(char*); i++){
@@ -352,7 +361,7 @@ void drawTargetBitmap128x296(GxEPD2_GFX& display,uint16_t target_image){  // Cal
   display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
   display.setFullWindow();
   display.setRotation(2);
-  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296};
+  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296,InspiMasonLogoV1_128x296};
   bool m = display.mirror(true);
   display.firstPage();
   do {
@@ -484,7 +493,7 @@ void wifiConnect()
       {
         _ssid = jObject["ssid"];
         _pass = jObject["password"];
-        //Serial.print(_ssid); Serial.println(_pass);
+        Serial.println(_ssid); Serial.println(_pass);
         WiFi.mode(WIFI_STA);
         WiFi.begin(_ssid, _pass);
         unsigned long startTime = millis();
@@ -678,6 +687,16 @@ void setup()
   if ((batteryVoltage<=LowBattWarningLevel)&(batteryVoltage>0.5)){
     drawTargetBitmap128x296(display1,1);
     colorTransientWipe(strip.Color(255, 0, 0));
+    delay(5000);
+    if (batteryVoltage<=LowBattAlarmLevel){
+      display1.powerOff();
+      Serial.println("Insufficient battery! Now starting deep sleep.");
+      ESP.deepSleep(0);
+    }
+  }
+  if (batteryVoltage<=0.5){
+    drawTargetBitmap128x296(display1,2);
+    colorTransientWipe(strip.Color(0, 255, 0));
     delay(5000);
   }
 
