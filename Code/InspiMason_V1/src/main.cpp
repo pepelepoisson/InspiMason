@@ -1,6 +1,5 @@
-// To do:
-// Fix toggling button on webpage
-// Add a second json log file to minimise risk to lose counters due to single file corruption.
+// InspiMason
+// Check http://www.chezpapietmamie.com/inspimason/
 
 // Main examples used to build this secondes
 // Basic SPIFFS write/read example: https://github.com/G6EJD/SPIFFS-Examples/blob/master/ESP8266_SPIFFS_Example.ino
@@ -33,16 +32,19 @@ uint16_t brightness=LOW_BRIGHTNESS;
 long start_time=0;
 int code_run_counter=0;
 int current_citation=0;
-int updated_code_run_counter=0;
-int updated_current_citation=0;
-int target_citation=0;
 int number_of_citations=0;
+int target_citation=0;
+int code_run_counter_bkp=0;
+int current_citation_bkp=0;
+int number_of_citations_bkp=0;
 int vbat_counter=0;
 bool SetupMode=false;
 bool citations_file_exists=false;
 bool citation_fits=false;
+bool first_time=true;
 String wifi_status = "Disconnected";
 String method4next = "Aleatoire";  // Warning!!!! Aucun accent sinon l'écriture dans log.json ne fonctionne plus!
+String method4next_bkp = "Aleatoire";  // Warning!!!! Aucun accent sinon l'écriture dans log.json ne fonctionne plus!
 String fw_version="1.0 (jan 2022)";
 
 const int analogInPin = A0;  // ESP8266 Analog Pin ADC0 = A0
@@ -187,6 +189,9 @@ File UploadFile;
 // Read log.json file used to store log counters etc. If not found or corrupted then initialize counters and settings.
 void read_log_data(){
   const char * _code_run_counter = "", *_current_citation = "", *_number_of_citations = "", *_method4next = "";
+  const char * _code_run_counter_bkp = "", *_current_citation_bkp = "", *_number_of_citations_bkp = "", *_method4next_bkp = "";
+
+  // Read file #1
   if(SPIFFS.exists("/log.json")){
     Serial.println("Found /log.json file");
     File logFile = SPIFFS.open("/log.json", "r");
@@ -223,11 +228,58 @@ void read_log_data(){
     _method4next="Aleatoire";
   }
 
+  // Now repeat by reading file #2
+  if(SPIFFS.exists("/log_bkp.json")){
+    Serial.println("Found /log_bkp.json file");
+    File logFile = SPIFFS.open("/log_bkp.json", "r");
+    if(logFile){
+      size_t size = logFile.size();
+      std::unique_ptr<char[]> buf(new char[size]);
+      logFile.readBytes(buf.get(), size);
+      logFile.close();
+
+      DynamicJsonBuffer logjsonBuffer;
+      JsonObject& logjObject = logjsonBuffer.parseObject(buf.get());
+      if(logjObject.success())
+      {
+        //Serial.println("Read values from json");
+        _code_run_counter_bkp = logjObject["code_run_counter"];
+        _current_citation_bkp = logjObject["current_citation"];
+        _number_of_citations_bkp = logjObject["number_of_citations"];
+        _method4next_bkp=logjObject["method4next"];
+        if(_code_run_counter_bkp==NULL || _current_citation_bkp==NULL || _number_of_citations_bkp==NULL|| _method4next_bkp==NULL){
+          Serial.println("Error retrieving stored counters - Will reset.");
+          _code_run_counter_bkp = "1";
+          _current_citation_bkp = "1";
+          _number_of_citations_bkp="1";
+          _method4next_bkp="Aleatoire";
+        }
+      }
+    }
+  }
+  else {
+    Serial.println("File /log_bkp.json not found - will initialize");
+    _code_run_counter_bkp = "1";
+    _current_citation_bkp = "1";
+    _number_of_citations_bkp="1";
+    _method4next_bkp="Aleatoire";
+  }
+
   // Convert counters from char to integer.
   code_run_counter=atoi(_code_run_counter);
   current_citation=atoi(_current_citation);
   number_of_citations=atoi(_number_of_citations);
   method4next=_method4next;
+  // Repeat for backup from file #2
+  code_run_counter_bkp=atoi(_code_run_counter_bkp);
+  current_citation_bkp=atoi(_current_citation_bkp);
+  number_of_citations_bkp=atoi(_number_of_citations_bkp);
+  method4next_bkp=_method4next_bkp;
+
+  // Ensure both sets are identical otherwise use biggest values
+  code_run_counter=max(code_run_counter,code_run_counter_bkp);
+  current_citation=max(current_citation,current_citation_bkp);
+  number_of_citations=max(number_of_citations,number_of_citations_bkp);
 
   String logData = "{code_run_counter:"+String(code_run_counter)+", current_citation:"+String(current_citation)+", number_of_citations:"+String(number_of_citations)+", method4next:"+method4next+"}";
   Serial.print("Got following log data: "); Serial.println(logData);
@@ -241,6 +293,12 @@ void update_log_data(){
   File logFile = SPIFFS.open("/log.json", "w");
   logjObject.printTo(logFile);
   logFile.close();
+
+  // Now repeat for backup fileName
+  File logFile_bkp = SPIFFS.open("/log_bkp.json", "w");
+  logjObject.printTo(logFile_bkp);
+  logFile_bkp.close();
+
   Serial.print("Updated log data with: ");Serial.println(logData);
 }
 
@@ -455,7 +513,7 @@ void wifiConnect()
       {
         _ssid = jObject["ssid"];
         _pass = jObject["password"];
-        Serial.println(_ssid); Serial.println(_pass);
+        //Serial.println(_ssid); Serial.println(_pass);
         WiFi.mode(WIFI_STA);
         WiFi.begin(_ssid, _pass);
         unsigned long startTime = millis();
@@ -558,7 +616,10 @@ String GetCitation()
   int entry=0;
 
 if (method4next=="Sequentiel"){target_citation=current_citation;}
-else {target_citation=random(0, number_of_citations-1);}
+else {
+  target_citation=random(0, number_of_citations-1);
+  current_citation=target_citation;
+}
 
   Serial.print("target_citation: ");Serial.println(target_citation);
   while (entry<target_citation){
@@ -569,14 +630,16 @@ else {target_citation=random(0, number_of_citations-1);}
   return citation;
 }
 
-// Triggered by web page when method to set next row is changed. Write modified setting into json log.
+// Triggered by web page when method to set next row is changed. Write modified setting into json log. Includes a dirty patch to avoid toggling method when webpage is loaded.
 void change_method4next(){
-  if (method4next=="Aleatoire"){method4next="Sequentiel";}
-  else {method4next="Aleatoire";}
-  Serial.print("Méthode pour prochaine citation:"); Serial.println(method4next);
-  // Update log.json with modified method4next value
-  update_log_data();
-
+  if (first_time==false){
+    if (method4next=="Aleatoire"){method4next="Sequentiel";}
+    else {method4next="Aleatoire";}
+    Serial.print("Méthode pour prochaine citation:"); Serial.println(method4next);
+    // Update log.json with modified method4next value
+    update_log_data();
+  }
+  else {first_time=false;}
   server.send(200,"text/plain", method4next);
 }
 
@@ -629,6 +692,12 @@ void setup()
           SPIFFS.remove("/log.json");
           Serial.println("Now removed!");
         }
+        // Now repeat with backup file
+        if (fileName=="/log_bkp.json" && fileSize<50){
+          Serial.println("Found a suspicious log_bkp.json file because it is too small - Will delete.");
+          SPIFFS.remove("/log_bkp.json");
+          Serial.println("Now removed!");
+        }
       }
     }
 
@@ -645,7 +714,7 @@ void setup()
 
 
   Serial.println("(4) Display bitmaps if needed.");
-  if ((batteryVoltage<=LowBattWarningLevel)&(batteryVoltage>0.5)){
+  if ((batteryVoltage<=LowBattWarningLevel)&(batteryVoltage>0.5)&(vbat_counter>=20)){
     drawTargetBitmap128x296(display1,1);
     colorTransientWipe(strip.Color(255, 0, 0));
     delay(5000);
@@ -655,12 +724,13 @@ void setup()
       ESP.deepSleep(0);
     }
   }
+  /*
   if (batteryVoltage<=0.5){
     drawTargetBitmap128x296(display1,2);
     colorTransientWipe(strip.Color(0, 255, 0));
     delay(5000);
   }
-
+*/
 
   Serial.println("(5) Read and update execution counters from SPIFFS.");
   read_log_data();
@@ -738,6 +808,8 @@ void setup()
     server.begin();
     Serial.println("Webserver running");
 
+    drawTargetBitmap128x296(display1,2);
+    delay(3000);
     drawTargetBitmap128x296(display1,0);
     delay(2000);
     displayInfo(display1,fw_version,current_ip,current_ssid,code_run_counter, current_citation,number_of_citations, batteryVoltage);
@@ -768,11 +840,11 @@ void loop()
       GetCitation();
       citation=formatMessage(citation);  // Modify message to avoid breaking words at end of number_of_lines
       attempts=attempts+1;
+      current_citation=current_citation+1;
     }
 
     print_string(display1,citation);
     code_run_counter=code_run_counter+1;
-    current_citation=current_citation+1;
     update_log_data();
     delay(500);
 
