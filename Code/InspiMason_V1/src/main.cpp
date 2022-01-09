@@ -1,19 +1,6 @@
 // To do:
-// Change deco leds to be displayed on 9 and 30 LEDs strips
-// Wifi mode: only start wifi access is door is closed less than 3 seconds after opening
-// Fix citation counter disply and avoid showing a blank screen at the end of the sequence
-
-// Done - now in trial mode:
-// Code to handle access point and station mode wifi
-// Store number of code execution in persistent memory
-// Handle new epaper type
-// Handle reading different text content at every execution
-// Improve wake-up hardware and detect when door is open
-// Control duration of LED animatins and sleep start based on door status
-// Must handle errors when reading log file gives no valid number
-// Allow use of international characters when printing text (accents)
-// Measure battery level
-// Add end of line characters as needed to prevent words from cutting at the end of lines when text is displayed on epaper.
+// Fix toggling button on webpage
+// Add a second json log file to minimise risk to lose counters due to single file corruption.
 
 // Main examples used to build this secondes
 // Basic SPIFFS write/read example: https://github.com/G6EJD/SPIFFS-Examples/blob/master/ESP8266_SPIFFS_Example.ino
@@ -42,17 +29,21 @@
 #define LED_ANIMATIONS_DURATION 300000 // Duration of LED animations (Milliseconds)
 
 Adafruit_NeoPixel strip = Adafruit_NeoPixel(NUM_LEDS, DATA_PIN, NEO_GRB + NEO_KHZ800);
-uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
 uint16_t brightness=LOW_BRIGHTNESS;
 long start_time=0;
+int code_run_counter=0;
+int current_citation=0;
 int updated_code_run_counter=0;
 int updated_current_citation=0;
+int target_citation=0;
 int number_of_citations=0;
 int vbat_counter=0;
 bool SetupMode=false;
 bool citations_file_exists=false;
 bool citation_fits=false;
 String wifi_status = "Disconnected";
+String method4next = "Aleatoire";  // Warning!!!! Aucun accent sinon l'écriture dans log.json ne fonctionne plus!
+String fw_version="1.0 (jan 2022)";
 
 const int analogInPin = A0;  // ESP8266 Analog Pin ADC0 = A0
 int sensorValue = 0;  // value read from the ADC0
@@ -65,13 +56,8 @@ float batteryVoltage=0;
 
 #include <GxEPD2_BW.h>
 #include <GxEPD2_3C.h>
-//#include <Fonts/FreeMonoBold9pt7b.h>
 #include <ModifiedFreeMonoBold9pt7b.h>
 #include <Fonts/FreeMonoBold24pt7b.h>
-//#include "Audiowide_Regular9pt7b.h"
-//#include <Fonts/TomThumb.h>
-//#include "bitmaps/Bitmaps200x200.h" // 1.54" b/w
-//#include "bitmaps/Bitmaps128x296.h" // 2.9"  b/w
 #include "project_bitmaps128x296.h"
 
 #define RST_PIN 0 // D3(0)
@@ -83,10 +69,7 @@ float batteryVoltage=0;
 // Second line = To use with waveshare 2.9 epaper - different wiring for RST pin otherwise boot problems
 GxEPD2_BW<GxEPD2_290_T94, GxEPD2_290_T94::HEIGHT> display1(GxEPD2_290_T94(/*CS=D8*/ CS_1, /*DC=D3*/ 0, /*RST=D4*/ 5, /*BUSY=D2*/ BUSY_H_x)); // GDEM029T94
 
-//GxEPD2_BW<GxEPD2_290_T94, GxEPD2_290_T94::HEIGHT> display(GxEPD2_290_T94(/*CS=D8*/ SS, /*DC=D3*/ 0, /*RST=D4*/ 2, /*BUSY=D2*/ 4)); // GDEM029T94
-
 char* mySsid = "inspimason";
-// Type your own IP address and gateway - This not the address in use on project ;-)
 IPAddress local_ip(192,168,168,168);
 IPAddress gateway(192,168,168,1);
 IPAddress netmask(255,255,255,0);
@@ -121,6 +104,13 @@ char webpage[] PROGMEM = R"=====(
     <legend style="color:blue;">Mise à jour du fichier des citations:</legend>
       <input type='file' name='update'>
       <input type='submit' value='Update'>
+    </fieldset>
+    <fieldset>
+    <legend style="color:blue;">Choix de l'ordre d'affichage:</legend>
+    <div>
+      <p> Ordre d'affichage des textes : <span id="method4next">__</span> </p>
+      <button class="primary" id="togglebtn" type="button" onclick="SetDisplayOrderFunction()">Changer ordre</button>
+    </div>
     </fieldset>
   </form>
   <form action="/action_page">
@@ -165,7 +155,24 @@ function myFunction()
   xhr.open("POST", url, true);
   xhr.send(JSON.stringify(data));
 };
+function SetDisplayOrderFunction()
+{
+  console.log("TOGGLE button was clicked!");
+  var xhr = new XMLHttpRequest();
+    var url = "/change_method4next";
 
+    xhr.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        document.getElementById("method4next").innerHTML = this.responseText;
+      }
+    };
+
+    xhr.open("GET", url, true);
+    xhr.send();
+
+};
+
+document.addEventListener('DOMContentLoaded', SetDisplayOrderFunction, false);
 </script>
 </html>
 )=====";
@@ -177,9 +184,9 @@ ESP8266WebServer server(80);
 //holds the current upload
 File UploadFile;
 
-void updateSPIFFS()
-{
-  const char * _code_run_counter = "", *_current_citation = "";
+// Read log.json file used to store log counters etc. If not found or corrupted then initialize counters and settings.
+void read_log_data(){
+  const char * _code_run_counter = "", *_current_citation = "", *_number_of_citations = "", *_method4next = "";
   if(SPIFFS.exists("/log.json")){
     Serial.println("Found /log.json file");
     File logFile = SPIFFS.open("/log.json", "r");
@@ -193,32 +200,52 @@ void updateSPIFFS()
       JsonObject& logjObject = logjsonBuffer.parseObject(buf.get());
       if(logjObject.success())
       {
+        //Serial.println("Read values from json");
         _code_run_counter = logjObject["code_run_counter"];
         _current_citation = logjObject["current_citation"];
-        //_number_of_citations = logjObject["number_of_citations"];
-        //Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.print(" current_citation: ");Serial.println(_current_citation);
+        _number_of_citations = logjObject["number_of_citations"];
+        _method4next=logjObject["method4next"];
+        if(_code_run_counter==NULL || _current_citation==NULL || _number_of_citations==NULL|| _method4next==NULL){
+          Serial.println("Error retrieving stored counters - Will reset.");
+          _code_run_counter = "1";
+          _current_citation = "1";
+          _number_of_citations="1";
+          _method4next="Aleatoire";
+        }
       }
     }
   }
-  else {_code_run_counter = "1";  _current_citation = "1";}
+  else {
+    Serial.println("File /log.json not found - will initialize");
+    _code_run_counter = "1";
+    _current_citation = "1";
+    _number_of_citations="1";
+    _method4next="Aleatoire";
+  }
 
-  // Convert counters from char to integer then add one.
-  updated_code_run_counter=atoi(_code_run_counter);
-  updated_current_citation=atoi(_current_citation);
-  //number_of_citations=atoi(_number_of_citations);
+  // Convert counters from char to integer.
+  code_run_counter=atoi(_code_run_counter);
+  current_citation=atoi(_current_citation);
+  number_of_citations=atoi(_number_of_citations);
+  method4next=_method4next;
 
-  String logData = "{code_run_counter:"+String(updated_code_run_counter)+", current_citation:"+String(updated_current_citation)+", number_of_citations:"+String(number_of_citations)+"}";
-  //String logData = "{code_run_counter:10, current_citation:5}";
+  String logData = "{code_run_counter:"+String(code_run_counter)+", current_citation:"+String(current_citation)+", number_of_citations:"+String(number_of_citations)+", method4next:"+method4next+"}";
+  Serial.print("Got following log data: "); Serial.println(logData);
+}
+
+// Write counters and setting variables into json datalog
+void update_log_data(){
+  String logData = "{code_run_counter:"+String(code_run_counter)+", current_citation:"+String(current_citation)+", number_of_citations:"+String(number_of_citations)+", method4next:"+method4next+"}";
   DynamicJsonBuffer logjBuffer;
   JsonObject& logjObject = logjBuffer.parseObject(logData);
   File logFile = SPIFFS.open("/log.json", "w");
   logjObject.printTo(logFile);
   logFile.close();
-  Serial.println(logData);
-
+  Serial.print("Updated log data with: ");Serial.println(logData);
 }
 
-void FileRead() {
+// Read citation.txt to establish the number of lines. Update number_of_citations and write to json datalog.
+void ReadDataFile() {
   String NewLine;
   int number_of_lines=0;
   Serial.println("reading...");
@@ -241,12 +268,12 @@ void FileRead() {
       }
     }
 
-//number_of_lines=100; //DEBUG
     FileRead.close();
     Serial.print("Number of lines in file: "); Serial.println(number_of_lines);
     if (filename=="citations.txt"){
       number_of_citations=number_of_lines;
-      updateSPIFFS();
+      Serial.print("Updated number_of_citations: "); Serial.println(number_of_citations);
+      update_log_data();
     }
   }
 }
@@ -264,15 +291,15 @@ String formatBytes(size_t bytes){
   }
 }
 
-String formatMessage(String message)
-{
+// Add end line characters to avoid breaking words at end of lines + Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
+String formatMessage(String message){
   // Add end line characters to avoid breaking words at end of lines
-  uint16_t k=26,startpos=0, line=1;
+  uint16_t startpos=0;
   int messageLength=message.length();
   Serial.println(message);
   Serial.println(messageLength);
 
-  // Substitute characters no part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
+  // Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
   message.replace("ô","#");
   message.replace("É","$");
   message.replace("û","*");
@@ -292,16 +319,12 @@ String formatMessage(String message)
   message.toCharArray(Buf, messageLength+1);  // Store sting content in a char array.
   citation_fits=true;
 
-  for(line; line<8; line++){
-    //Serial.print("line: "); Serial.println(line);
+  for(uint16_t line=1; line<8; line++){
     if (messageLength-startpos>26){  // Code to run only if remaining char array length exceeds maximum size for one line with this font.
       if (line==7){
         Serial.println("message doesn't fit on screen!");
         citation_fits=false;}
-      k=26;
-      //Serial.print("startpos:"); Serial.println(startpos);
-      for (k; k>1;k--){   // Starting at the end of line, walk back until a space is found = begining of last word.
-        //Serial.println(Buf[k]);
+      for (uint16_t k=26; k>1;k--){   // Starting at the end of line, walk back until a space is found = begining of last word.
         if (Buf[startpos+k]==' '){  // Replace space with line break and update counter of next line start.
           Buf[startpos+k]='\n';
           startpos=startpos+k+1;
@@ -315,48 +338,25 @@ String formatMessage(String message)
   return message;
 }
 
+// Print a string onto epaper display
 void print_string(GxEPD2_GFX& display, String message)
 {
   display1.init(115200); // enable diagnostic output on Serial
-  //display.setRotation(3);
   display.setRotation(1);
   display.setFont(&FreeMonoBold9pt7b);
-  //display.setFont(&FreeSerifItalic9pt7b);
-  //display.setFont(&Audiowide_Regular9pt7b);
-  //display.setFont(&TomThumb);
   display.setTextColor(GxEPD_BLACK);
-  //uint16_t x = (display.width() - 160) / 2;
-  //uint16_t y = display.height() / 2;
   display.setFullWindow();
   display.firstPage();
   do
   {
     display.fillScreen(GxEPD_WHITE);
-    //display.setCursor(x, y);
     display.setCursor(0, 10);
     display.println(message);
   }
   while (display.nextPage());
 }
 
-void drawBitmaps128x296(GxEPD2_GFX& display){  // Call this subroutine to draw all images in the bitmaps array one after the other.
-  //const unsigned char* bitmaps[] = {AventuriersSaintGerard,PapasInventeursEtJeunes_128x296};
-  const unsigned char* bitmaps[] = {PapasInventeursEtJeunes_128x296,ChargeBattery_128x296,InspiMasonLogoV1_128x296};
-  //const unsigned char* bitmaps[] = {ChargeBattery_128x296};
-  bool m = display.mirror(true);
-  for (uint16_t i = 0; i < sizeof(bitmaps) / sizeof(char*); i++){
-    display.firstPage();
-    do {
-      Serial.println(i);
-      display.fillScreen(GxEPD_WHITE);
-      display.drawInvertedBitmap(0, 0, bitmaps[i], display.epd2.WIDTH, display.epd2.HEIGHT, GxEPD_BLACK);
-    }
-    while (display.nextPage());
-    delay(2000);
-  }
-  display.mirror(m);
-}
-
+// Draw a bitmap image onto epaper
 void drawTargetBitmap128x296(GxEPD2_GFX& display,uint16_t target_image){  // Call this subroutine to draw a single image referred by its position in the bitmaps array.
   display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
   display.setFullWindow();
@@ -378,16 +378,7 @@ void drawTargetBitmap128x296(GxEPD2_GFX& display,uint16_t target_image){  // Cal
 }
 
 
-void drawBitmaps(GxEPD2_GFX& display){
-  display.setFullWindow();
-  display.setRotation(2);
-  drawBitmaps128x296(display);
-}
-
-
-
-// Input a value 0 to 255 to get a color value.
-// The colours are a transition r - g - b - back to r.
+// Input a value 0 to 255 to get a color value. The colours are a transition r - g - b - back to r.
 uint32_t Wheel(byte WheelPos) {
   WheelPos = 255 - WheelPos;
   if(WheelPos < 85) {
@@ -401,33 +392,16 @@ uint32_t Wheel(byte WheelPos) {
   return strip.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
 }
 
-// Fill the dots one after the other with a color
-void colorWipe(uint32_t c) {
-  for(uint16_t i=0; i<strip.numPixels(); i++) {
-    strip.setPixelColor(i, c);
-  }
-  strip.show();
-}
-
+// Set all LEDs to the same color, one after the other, with a visible delay.
 void colorTransientWipe(uint32_t c) {
   for(uint16_t i=0; i<strip.numPixels(); i++) {
     strip.setPixelColor(i, c);
     strip.show();
-    delay(25);
+    delay(100);
   }
 }
 
-void rainbow() {
-  uint16_t i, j;
-
-  for(j=0; j<256; j++) {
-    for(i=0; i<strip.numPixels(); i++) {
-      strip.setPixelColor(i, Wheel((i+j) & 255));
-    }
-  }
-}
-
-// Slightly different, this makes the rainbow equally distributed throughout
+// Set all LEDs to different colors covering a full rainbow.
 void rainbowCycle() {
   uint16_t i, j;
 
@@ -438,28 +412,15 @@ void rainbowCycle() {
   }
 }
 
-
-// List of patterns to cycle through.  Each is defined as a separate function below.
-typedef void (*SimplePatternList[])();
-SimplePatternList gPatterns = {rainbowCycle};
-char* SimplePatternNames[]={"rainbowCycle" };
-
-void nextPattern(){
-  // add one to the current pattern number, and wrap around at the end
-  gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE(gPatterns);
-}
-
+// Define a few LED apperns for easy use later + control of MOSFET powering LEDs.
 void LED(String pattern){
 
   if (pattern=="deco"){
     digitalWrite(MOSFET_GATE,HIGH);
-    //gPatterns[gCurrentPatternNumber]();
     rainbowCycle();
-    //colorWipe(strip.Color(0, 0, 255));
   }
 
   if (pattern=="off"){
-    //for (int i = NUM_LEDS; i >=0; i--) {leds[i].nscale8(230);}
     digitalWrite(MOSFET_GATE,LOW);
   }
 
@@ -469,6 +430,7 @@ void LED(String pattern){
   delay(1000/FRAMES_PER_SECOND);
 }
 
+// Connect to WiFi: try credentials in config.json or start as access point.
 void wifiConnect()
 {
   //reset networking
@@ -520,13 +482,9 @@ void wifiConnect()
     current_ip="192.168.168.168";
   }
   else {Serial.println(""); Serial.println("ESP now connected in STAtion mode to known network.");wifi_status = "Station";}
-  //Serial.println("");
-
-  //Serial.println(WiFi.localIP());
-  //WiFi.printDiag(Serial);
-
 }
 
+// Triggered by webpage when WiFi connection credentials are updated.
 void handleSettingsUpdate()
 {
   String data = server.arg("plain");
@@ -543,6 +501,7 @@ void handleSettingsUpdate()
   wifiConnect();
 }
 
+// Triggered by webpage when a text message is sent to be displayed onto epaper..
 void handleForm() {
  String messageWeb = server.arg("message_web");
 
@@ -562,9 +521,8 @@ Serial.print("After reformating: ");Serial.println(messageWeb);
  ESP.deepSleep(0);
 }
 
-void displayInfo(GxEPD2_GFX& display, String current_ip, String current_ssid, int code_run_counter, int current_citation, int number_of_citations, float batteryVoltage){
-  //display.fillScreen(GxEPD_WHITE);
-  //display.fillRect(0, 0, 100, 100, GxEPD_BLACK);
+// Display setup info on a single epaper dashboard.
+void displayInfo(GxEPD2_GFX& display, String current_fw, String current_ip, String current_ssid, int code_run_counter, int current_citation, int number_of_citations, float batteryVoltage){
   display.setRotation(1);
   display.setTextColor(GxEPD_BLACK);
   display.setFullWindow();
@@ -573,14 +531,12 @@ void displayInfo(GxEPD2_GFX& display, String current_ip, String current_ssid, in
   {
     display.fillScreen(GxEPD_WHITE);
     // Draw boxes with round corners
-    //display.drawRoundRect(2, 2, 143, 124, 8, GxEPD_BLACK);
-    //display.drawRoundRect(150, 2, 146, 124, 8, GxEPD_BLACK);
-
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(2, 20);
-    display.print("Ex}cutions: "+ String(code_run_counter));
+    display.print("Version FW: "+ current_fw);
     display.setCursor(2, 40);
-    display.print("Citation affich}e: "+String(current_citation%number_of_citations));
+    //display.print("Citation affich}e: "+String(current_citation%number_of_citations));
+    display.print("Ex}cutions: "+ String(code_run_counter));
     display.setCursor(2, 60);
     display.print("Citations en m}moire: "+String(number_of_citations));
     display.setCursor(2, 80);
@@ -593,27 +549,36 @@ void displayInfo(GxEPD2_GFX& display, String current_ip, String current_ssid, in
   while (display.nextPage());
 }
 
+// Read targeted row from target text file.
 String GetCitation()
 {
-  citation="Houston we've got a problem!";
+  citation="Houston we've got a problem!";  // Default string displayed if code fails to retrieve expected text.
   File myDataFile = SPIFFS.open(current_filename, "r");              // Open the file again, this time for reading
   if (!myDataFile) Serial.println("file open failed");  // Check for errors
   int entry=0;
 
-  int target_citation=random(0, number_of_citations-1);
+if (method4next=="Sequentiel"){target_citation=current_citation;}
+else {target_citation=random(0, number_of_citations-1);}
+
   Serial.print("target_citation: ");Serial.println(target_citation);
   while (entry<target_citation){
     entry=entry+1;
     if(myDataFile.available()){citation=myDataFile.readStringUntil('\n');}
   }
   myDataFile.close();    // Close the file
-  //citation="un été";
-  //citation="Test message: Hâte-toi d'Être";
-
-
   return citation;
 }
 
+// Triggered by web page when method to set next row is changed. Write modified setting into json log.
+void change_method4next(){
+  if (method4next=="Aleatoire"){method4next="Sequentiel";}
+  else {method4next="Aleatoire";}
+  Serial.print("Méthode pour prochaine citation:"); Serial.println(method4next);
+  // Update log.json with modified method4next value
+  update_log_data();
+
+  server.send(200,"text/plain", method4next);
+}
 
 void setup()
 {
@@ -636,8 +601,7 @@ void setup()
     Serial.print("Battery voltage: "); Serial.print(batteryVoltage); Serial.println("V");
   }
 
-
-  SPIFFS.begin();
+  //SPIFFS.begin();
 
   Serial.println("(1) Setup LED strip.");
   // Initialize MOSFET_GATE used to turn LED strip power on/off
@@ -646,13 +610,11 @@ void setup()
   // Initialize LED strip and set all pixels to BLUE
   strip.begin();
   strip.setBrightness(LOW_BRIGHTNESS);
-  //colorWipe(strip.Color(0, 0, 255));
-  //strip.show();
   colorTransientWipe(strip.Color(0, 0, 255));
 
 
-
   Serial.println("(2) Setup SPIFFS file system.");
+  SPIFFS.begin();
   if (!SPIFFS.begin()) { Serial.println("SPIFFS failed");
     } else {
       Serial.println("Content of SPIFFS memory:");
@@ -668,10 +630,7 @@ void setup()
           Serial.println("Now removed!");
         }
       }
-      //Serial.printf("\n");
     }
-
-
 
 
   Serial.println("(3) Setup ePaper.");
@@ -684,6 +643,8 @@ void setup()
   digitalWrite(RST_PIN, HIGH);
   delay(200);
 
+
+  Serial.println("(4) Display bitmaps if needed.");
   if ((batteryVoltage<=LowBattWarningLevel)&(batteryVoltage>0.5)){
     drawTargetBitmap128x296(display1,1);
     colorTransientWipe(strip.Color(255, 0, 0));
@@ -701,79 +662,21 @@ void setup()
   }
 
 
-  Serial.println("(4) Read and update execution counters from SPIFFS.");
-  // Check for log.json file used to store log counters etc.
-  const char * _code_run_counter = "", *_current_citation = "", *_number_of_citations = "";
-  if(SPIFFS.exists("/log.json")){
-    Serial.println("Found /log.json file");
-    File logFile = SPIFFS.open("/log.json", "r");
-    if(logFile){
-      size_t size = logFile.size();
-      std::unique_ptr<char[]> buf(new char[size]);
-      logFile.readBytes(buf.get(), size);
-      logFile.close();
+  Serial.println("(5) Read and update execution counters from SPIFFS.");
+  read_log_data();
 
-      DynamicJsonBuffer logjsonBuffer;
-      JsonObject& logjObject = logjsonBuffer.parseObject(buf.get());
-      if(logjObject.success())
-      {
-        Serial.println("Read values from json");
-        _code_run_counter = logjObject["code_run_counter"];
-        _current_citation = logjObject["current_citation"];
-        _number_of_citations = logjObject["number_of_citations"];
-        if(_code_run_counter==NULL || _current_citation==NULL || _number_of_citations==NULL){
-          Serial.println("Error retrieving stored counters - Will reset.");
-          _code_run_counter = "1";
-          _current_citation = "1";
-          _number_of_citations="1";
-        }
-
-        // debug - RESET COUNTERS FOR TEST PURPOSES - MUST EXECUTE ONLY ONCE THEN REPLACE WITH NORMAL CODE
-        //_code_run_counter = "1";
-        //_current_citation = "111";
-        //Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.print(" current_citation: ");Serial.print(_current_citation);Serial.print(" number_of_citations: ");Serial.println(_number_of_citations);
-      }
-    }
-  }
-  else {
-    _code_run_counter = "1";
-    _current_citation = "1";
-    _number_of_citations="1";
-}
-Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.print(" current_citation: ");Serial.print(_current_citation);Serial.print(" number_of_citations: ");Serial.println(_number_of_citations);
-
-  // Must add code to handle exceptions when log.json is empty or invalid!!!!!!!!!
-  // Convert counters from char to integer then add one.
-  updated_code_run_counter=atoi(_code_run_counter)+1;
-  updated_current_citation=atoi(_current_citation)+1;
-  // NEED TO DEBUG BELOW
-  if ((atoi(_number_of_citations)==1)&(citations_file_exists)){ // If _number_of_citations is not red fron log file and citations.txt file exists then read it to update number of citations counter
-    colorTransientWipe(strip.Color(255, 0, 0));
+  if ((number_of_citations==1)&(citations_file_exists)){ // If _number_of_citations is not red fron log file and citations.txt file exists then read it to update number of citations counter
+    colorTransientWipe(strip.Color(255, 255, 0));
     filename="citations.txt";
-    FileRead();
+    ReadDataFile();
   }
-  else {number_of_citations=atoi(_number_of_citations);}
-
-
-  String logData = "{code_run_counter:"+String(updated_code_run_counter)+", current_citation:"+String(updated_current_citation)+", number_of_citations:"+String(_number_of_citations)+"}";
-  Serial.println(logData);
-  //String logData = "{code_run_counter:10, current_citation:5}";
-  Serial.println("Will now update log.json file - don't reboot!.");
-  DynamicJsonBuffer logjBuffer;
-  JsonObject& logjObject = logjBuffer.parseObject(logData);
-  File logFile = SPIFFS.open("/log.json", "w");
-  logjObject.printTo(logFile);
-
- logFile.close();
-
-  //colorTransientWipe(strip.Color(0, 255, 0));
-  //delay(500);
 
   while (millis()<2000){
     Serial.print(".");
     delay(100);
   } // Wait here until at least 2 seconds have elapsed since stratup then test if switch is still pressed
   LED("deco");
+  Serial.println(":");
   Serial.println(" Ready to move on.");
 
   // read the analog in value
@@ -806,16 +709,18 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
       if (server.uri() != "/update") return;
       HTTPUpload& upload = server.upload();
       if (upload.status == UPLOAD_FILE_START) {
-        filename = upload.filename;
+        //filename = upload.filename;
+        filename="citations.txt";
         Serial.print("Upload Name: "); Serial.println(filename);
         UploadFile = SPIFFS.open("/data/" + filename, "w");
+        //UploadFile = SPIFFS.open("/data/citations.txt", "w");
       } else if (upload.status == UPLOAD_FILE_WRITE) {
         if (UploadFile)
           UploadFile.write(upload.buf, upload.currentSize);
       } else if (upload.status == UPLOAD_FILE_END) {
         if (UploadFile)
           UploadFile.close();
-          FileRead();  // After file downloads, read it
+          ReadDataFile();  // After file downloads, read it
       }
 
     });
@@ -828,25 +733,15 @@ Serial.print("code_run_counter: "); Serial.print(_code_run_counter); Serial.prin
     });
 
     server.on("/settings", HTTP_POST, handleSettingsUpdate);
+    server.on("/change_method4next",change_method4next);
 
     server.begin();
     Serial.println("Webserver running");
 
-    //display1.init(115200); // enable diagnostic output on Serial -WARNING: this disables LEDs
     drawTargetBitmap128x296(display1,0);
     delay(2000);
-    displayInfo(display1,current_ip,current_ssid,updated_code_run_counter, updated_current_citation,number_of_citations, batteryVoltage);
-    //print_string(display1," SSID: "+current_ssid+" IP Address: "+current_ip);
-
-    // Initialise LEDs again
-    //pinMode(MOSFET_GATE, OUTPUT); digitalWrite(MOSFET_GATE, HIGH);
-    //strip.begin();
-    //strip.setBrightness(LOW_BRIGHTNESS);
-    //colorTransientWipe(strip.Color(0, 0, 255));
+    displayInfo(display1,fw_version,current_ip,current_ssid,code_run_counter, current_citation,number_of_citations, batteryVoltage);
   }
-  //} else {
-  //  Serial.println("WiFi Failed");
-  //}
 
   Serial.println("Setup done.");
 
@@ -864,13 +759,8 @@ void loop()
 
   if ((millis()-start_time>LED_ANIMATIONS_DURATION)||!SetupMode){
     LED("off");
-    if (SetupMode==true){Serial.print(" battery voltage: "); Serial.print(batteryVoltage);Serial.println("V");}
     delay(50);
-    //display1.init(115200); // enable diagnostic output on Serial
 
-
-    //drawBitmaps(display1);
-    //delay(2000);
 
     int attempts=1;
     while ((!citation_fits)&(attempts<10)){
@@ -881,7 +771,9 @@ void loop()
     }
 
     print_string(display1,citation);
-
+    code_run_counter=code_run_counter+1;
+    current_citation=current_citation+1;
+    update_log_data();
     delay(500);
 
     display1.powerOff();
