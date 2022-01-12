@@ -186,6 +186,56 @@ ESP8266WebServer server(80);
 //holds the current upload
 File UploadFile;
 
+// Add end line characters to avoid breaking words at end of lines + Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
+String formatMessage(String message){
+  // Add end line characters to avoid breaking words at end of lines
+  uint16_t startpos=0;
+  int messageLength=message.length();
+  //Serial.println(message);
+  //Serial.println(messageLength);
+
+  // Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
+  message.replace("ô","#");
+  message.replace("É","$");
+  message.replace("û","*");
+  message.replace("ç","+");
+  message.replace("î","<");
+  message.replace("à","{");
+  message.replace("ê","|");
+  message.replace("é","}");
+  message.replace("è","~");
+  message.replace("ë",">");
+  message.replace("ù","^");
+  message.replace("ï","_");
+  message.replace("Ê","=");
+  message.replace("â","\\");
+  message.replace("’","'");
+  message.replace("œ","oe");
+
+
+  char Buf[messageLength+1]; // Char array used to manipulate string content by position
+  message.toCharArray(Buf, messageLength+1);  // Store sting content in a char array.
+  citation_fits=true;
+
+  for(uint16_t line=1; line<8; line++){
+    if (messageLength-startpos>26){  // Code to run only if remaining char array length exceeds maximum size for one line with this font.
+      if (line==7){
+        //Serial.println("message doesn't fit on screen!");
+        citation_fits=false;}
+      for (uint16_t k=26; k>1;k--){   // Starting at the end of line, walk back until a space is found = begining of last word.
+        if (Buf[startpos+k]==' '){  // Replace space with line break and update counter of next line start.
+          Buf[startpos+k]='\n';
+          startpos=startpos+k+1;
+          break;
+        }
+      }
+    }
+  }
+
+  message=Buf;
+  return message;
+}
+
 // Read log.json file used to store log counters etc. If not found or corrupted then initialize counters and settings.
 void read_log_data(){
   const char * _code_run_counter = "", *_current_citation = "", *_number_of_citations = "", *_method4next = "";
@@ -321,6 +371,9 @@ void ReadDataFile() {
 
       if (In == '\n') {
         //Serial.print(NewLine);
+        // Uncoment lines below to search citation.txt to test and report lines exceeding screen size
+        formatMessage(NewLine);
+        if(!citation_fits){Serial.print("Line "); Serial.print(number_of_lines+1);Serial.println(" doesn't fit");}
         NewLine = "";
         number_of_lines=number_of_lines+1;
       }
@@ -331,6 +384,7 @@ void ReadDataFile() {
     if (filename=="citations.txt"){
       number_of_citations=number_of_lines;
       Serial.print("Updated number_of_citations: "); Serial.println(number_of_citations);
+      current_citation=1; // Reset current_citation counter
       update_log_data();
     }
   }
@@ -347,53 +401,6 @@ String formatBytes(size_t bytes){
   } else {
     return String(bytes/1024.0/1024.0/1024.0)+"GB";
   }
-}
-
-// Add end line characters to avoid breaking words at end of lines + Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
-String formatMessage(String message){
-  // Add end line characters to avoid breaking words at end of lines
-  uint16_t startpos=0;
-  int messageLength=message.length();
-  Serial.println(message);
-  Serial.println(messageLength);
-
-  // Substitute characters not part of 7 bit font with others that are less needed. Will be displayed properly using modified font.
-  message.replace("ô","#");
-  message.replace("É","$");
-  message.replace("û","*");
-  message.replace("ç","+");
-  message.replace("î","<");
-  message.replace("à","{");
-  message.replace("ê","|");
-  message.replace("é","}");
-  message.replace("è","~");
-  message.replace("ë",">");
-  message.replace("ù","^");
-  message.replace("ï","_");
-  message.replace("Ê","=");
-  message.replace("â","\\");
-
-  char Buf[messageLength+1]; // Char array used to manipulate string content by position
-  message.toCharArray(Buf, messageLength+1);  // Store sting content in a char array.
-  citation_fits=true;
-
-  for(uint16_t line=1; line<8; line++){
-    if (messageLength-startpos>26){  // Code to run only if remaining char array length exceeds maximum size for one line with this font.
-      if (line==7){
-        Serial.println("message doesn't fit on screen!");
-        citation_fits=false;}
-      for (uint16_t k=26; k>1;k--){   // Starting at the end of line, walk back until a space is found = begining of last word.
-        if (Buf[startpos+k]==' '){  // Replace space with line break and update counter of next line start.
-          Buf[startpos+k]='\n';
-          startpos=startpos+k+1;
-          break;
-        }
-      }
-    }
-  }
-
-  message=Buf;
-  return message;
 }
 
 // Print a string onto epaper display
@@ -615,7 +622,7 @@ String GetCitation()
   if (!myDataFile) Serial.println("file open failed");  // Check for errors
   int entry=0;
 
-if (method4next=="Sequentiel"){target_citation=current_citation;}
+if (method4next=="Sequentiel"){target_citation=current_citation%number_of_citations;}
 else {
   target_citation=random(0, number_of_citations-1);
   current_citation=target_citation;
