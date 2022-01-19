@@ -520,7 +520,7 @@ void wifiConnect()
       {
         _ssid = jObject["ssid"];
         _pass = jObject["password"];
-        //Serial.println(_ssid); Serial.println(_pass);
+        Serial.println(_ssid); Serial.println(_pass);
         WiFi.mode(WIFI_STA);
         WiFi.begin(_ssid, _pass);
         unsigned long startTime = millis();
